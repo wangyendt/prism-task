@@ -1,0 +1,14 @@
+<resources>
+    <style name="Theme.Prism.Base" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:alertDialogTheme">@style/Theme.Prism.Dialog</item><item name="android:fontFamily">sans</item><item name="android:windowLightStatusBar">false</item><item name="android:colorAccent">#8DE2D5</item><item name="android:windowBackground">#101F2B</item><item name="android:statusBarColor">#101F2B</item><item name="android:navigationBarColor">#101F2B</item><item name="android:windowActionModeOverlay">true</item>
+    </style>
+    <style name="Theme.Prism" parent="Theme.Prism.Base" />
+    <style name="Theme.Prism.Dialog" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#8DE2D5</item>
+        <item name="android:colorBackground">#192C39</item>
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="android:textColorPrimary">#EFF6F6</item>
+        <item name="android:textColorSecondary">#9DB1BC</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
+</resources>

@@ -1,0 +1,25 @@
+plugins { id 'com.android.application' }
+def signingFile = rootProject.file('.signing/release.properties')
+def signing = new Properties()
+if (signingFile.exists()) signingFile.withInputStream { signing.load(it) }
+android {
+    namespace 'com.wayne.prismtask'
+    compileSdk 36
+    defaultConfig { applicationId 'com.wayne.prismtask'; minSdk 26; targetSdk 36; versionCode 1; versionName '0.1.0' }
+    compileOptions { coreLibraryDesugaringEnabled true; sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    if (signingFile.exists()) {
+        signingConfigs { release { storeFile rootProject.file(signing.storeFile); storePassword signing.storePassword; keyAlias signing.keyAlias; keyPassword signing.keyPassword } }
+    }
+    buildTypes {
+        debug { applicationIdSuffix '.debug'; versionNameSuffix '-debug' }
+        release { minifyEnabled false; if (signingFile.exists()) signingConfig signingConfigs.release }
+    }
+    lint { abortOnError true }
+}
+dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+    implementation 'androidx.activity:activity:1.12.4'
+    implementation 'androidx.core:core:1.17.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}

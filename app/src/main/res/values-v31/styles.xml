@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.Prism" parent="Theme.Prism.Base">
+        <item name="android:windowSplashScreenBackground">#101F2B</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_prism</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#101F2B</item>
+    </style>
+</resources>
