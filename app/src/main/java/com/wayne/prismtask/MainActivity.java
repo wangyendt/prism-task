@@ -513,7 +513,7 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
                 render();
                 return;
               }
-              submitWithRoutingConfirmation();
+              launchSubmit();
             });
     if (app.submitting || app.importing) {
       submit.setAlpha(.55f);
@@ -606,94 +606,17 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
     box.addView(catalogStatus);
     if (app.mode.equals("image") && !app.preview) {
       gap(box, 16);
-      imageRoutePanel(box);
+      imagePassthroughPanel(box);
     }
   }
 
-  void imageRoutePanel(LinearLayout box) {
-    eyebrow(box, "ROUTING / 生图主模型");
-    ImageRouting.Choice route = app.imageRoute();
-    if (route == null || route.status().equals("unknown")) {
-      hint(box, "服务尚未提供此组合的生图路由。请刷新目录；实际执行主模型以任务结果为准。", MUTED);
-      return;
-    }
-    boolean fresh = app.freshRoute(route);
-    if (route.unsupported()) {
-      hint(box, "此模型 + 等级当前不被生图路由接受", CORAL);
-      gap(box, 7);
-      hint(box, "codex-task 会在上游请求前拒绝此组合，请调整模型或思考等级。", MUTED);
-    } else {
-      TextView target =
-          mono(route.model() + " / " + route.effort(), 13, route.fallback() ? CORAL : MINT);
-      box.addView(target);
-      gap(box, 7);
-      hint(
-          box,
-          route.fallback()
-              ? "预计从 " + app.model + " 回退到以上主模型；由 codex-task 在提交上游前处理，不是 OpenAI 服务端换模型。"
-              : "预计保留所选主模型，无 codex-task 回退。",
-          MUTED);
-    }
+  void imagePassthroughPanel(LinearLayout box) {
+    eyebrow(box, "DIRECT / 按所选组合提交");
+    box.addView(mono(app.model + " / " + (app.selectedEffort() == null ? "服务默认" : app.selectedEffort()), 13, MINT));
     gap(box, 8);
-    hint(
-        box,
-        (fresh ? "服务路由 · " : "缓存路由，提交前请刷新 · ")
-            + formatIso(route.updatedAt())
-            + "。这是主模型，不是底层绘图模型版本。",
-        fresh ? MUTED : CORAL);
-  }
-
-  void submitWithRoutingConfirmation() {
-    if (!app.mode.equals("image")
-        || app.preview
-        || app.selectionError() != null
-        || app.prompt.isBlank()
-        || !app.hasToken()) {
-      launchSubmit();
-      return;
-    }
-    ImageRouting.Choice route = app.imageRoute();
-    if (route != null && route.unsupported()) {
-      new AlertDialog.Builder(this)
-          .setTitle(app.freshRoute(route) ? "此生图组合会被拒绝" : "请刷新生图路由")
-          .setMessage("服务返回的路由不接受这个模型与思考等级组合。调整选择或刷新目录后再提交，不会自动降低思考等级。")
-          .setNegativeButton("返回调整", null)
-          .setNeutralButton("选择模型", (d, w) -> modelDialog())
-          .setPositiveButton("刷新目录", (d, w) -> app.refresh(true))
-          .show();
-      return;
-    }
-    if (route != null && route.ready() && route.fallback()) {
-      String selectedModel = app.model, selectedEffort = app.selectedEffort(), endpoint = app.base;
-      new AlertDialog.Builder(this)
-          .setTitle("确认主模型回退")
-          .setMessage(
-              app.model
-                  + " / "
-                  + (selectedEffort == null ? "服务默认" : selectedEffort)
-                  + "\n→ "
-                  + route.model()
-                  + " / "
-                  + route.effort()
-                  + "\n\ncodex-task 会在发送给 OpenAI 前替换主模型。托管绘图模型版本未披露。"
-                  + (app.freshRoute(route) ? "" : "\n\n当前为缓存路由，建议先刷新；实际执行模型以任务结果为准。"))
-          .setNegativeButton("返回调整", null)
-          .setNeutralButton("刷新目录", (d, w) -> app.refresh(true))
-          .setPositiveButton(
-              "按回退模型提交",
-              (d, w) -> {
-                if (!app.mode.equals("image")
-                    || !endpoint.equals(app.base)
-                    || !selectedModel.equals(app.model)
-                    || !Objects.equals(selectedEffort, app.selectedEffort())
-                    || !route.sameTarget(app.imageRoute())) {
-                  toast("选择或路由已更新，请重新确认");
-                  return;
-                }
-                launchSubmit();
-              })
-          .show();
-    } else launchSubmit();
+    hint(box, "模型和等级原样提交，不自动回退。所有选择均可尝试；不支持时返回具体错误，由你决定是否更换。", MUTED);
+    gap(box, 8);
+    hint(box, "这里选择的是调用工具的主模型；底层绘图模型由上游选择，具体版本未知。", MUTED);
   }
 
   void launchSubmit() {
@@ -1034,7 +957,7 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
             }),
         new LinearLayout.LayoutParams(-1, dp(48)));
     gap(content, 22);
-    TextView footer = mono("PRISM TASK  0.2.0  /  DIRECT ONLY", 10, MUTED);
+    TextView footer = mono("PRISM TASK  0.3.0  /  DIRECT ONLY", 10, MUTED);
     footer.setGravity(Gravity.CENTER);
     content.addView(footer);
   }
@@ -1130,9 +1053,6 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
     info(meta, job.mode.equals("image") ? "选择的主模型" : "选择模型", job.model);
     info(meta, "思考等级", job.effort == null ? "服务默认（未传入）" : job.effort);
     info(meta, "任务 ID", job.id);
-    if (job.mode.equals("image") && !job.routeModel.isBlank()) {
-      info(meta, "提交前路由预期", job.routeModel + " / " + job.routeEffort);
-    }
     if (!job.references.isEmpty()) {
       gap(meta, 8);
       eyebrow(meta, "INPUT / 参考图片");
@@ -1155,13 +1075,13 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
     }
     String effective = job.result.optString("effectiveModel", "");
     if (!effective.isBlank())
-      info(meta, job.mode.equals("image") ? "实际执行主模型" : "实际使用模型", effective);
+      info(meta, job.mode.equals("image") ? "上游请求主模型" : "实际使用模型", effective);
     String reasoning = job.result.optString("reasoningEffort", "");
-    if (!reasoning.isBlank()) info(meta, "实际思考等级", reasoning);
+    if (!reasoning.isBlank()) info(meta, "请求思考等级", reasoning);
     if (!effective.isBlank() && !effective.equals(job.model))
       hint(
           meta,
-          job.mode.equals("image") ? "codex-task 在上游请求前回退到兼容主模型；这不是底层绘图模型的版本。" : "实际执行模型与提交选择不同。",
+          "服务返回的主模型与提交选择不同，请检查服务版本；这不是底层绘图模型版本。",
           CORAL);
     if (job.mode.equals("image")) {
       gap(meta, 10);
@@ -1225,8 +1145,16 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
         LinearLayout fail = card(content);
         hint(
             fail,
-            "服务返回 " + job.result.optString("errorCode", job.status) + "。原请求已保留，可调整后重新测试。",
+            TaskFailure.describe(job.result.optString("errorCode", job.status), job.model, job.effort),
             CORAL);
+        gap(fail, 12);
+        fail.addView(mono(job.result.optString("errorCode", job.status), 10, MUTED));
+        gap(fail, 16);
+        fail.addView(button("调整组合再试", "pen", false, () -> {
+          app.prompt = current.prompt;
+          app.mode = current.mode;
+          navigate("studio");
+        }));
         gap(content, 16);
       }
       if (job.status.equals("needs_input")) {

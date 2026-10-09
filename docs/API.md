@@ -54,44 +54,31 @@ Token 使用非导出 Android Keystore AES 密钥及随机 IV，通过 AES/GCM �
 
 ## 生图模型的两层含义
 
-App 设置选择的是处理提示词并调用 image_generation 工具的主模型。结果展示服务实际返回的 effectiveModel；它不是底层绘图模型版本。托管绘图工具没有披露具体版本。服务对被标记为 Responses Lite 的模型使用兼容主模型 gpt-5.5；gpt-6-astra 路由有特别处理。缓存条目可能随目录刷新变化，同一模型今天是否回退不能仅凭型号推断。客户端不硬编码这套回退规则，也不把“6 系列”视为统一的生图能力保证。
+App 设置选择的是处理提示词并调用 image_generation 工具的主模型。服务使用 classic Responses 格式保留所选主模型和等级，不再主动替换成 gpt-5.5。`effectiveModel` 是服务发给上游的主模型，不是底层绘图版本或上游内部调度证明。
 
-## 可选动态生图路由（0.2.0）
+## 生图提交与错误
 
-hx470 服务已在 `GET /v1/models` 响应中增补 `imageRouting`。字段来源是 codex-task 当前实际使用的 Direct 生图解析函数，而非 App 静态模型表。目录只查询元数据，不创建推理任务。
+客户端不依赖旧 `imageRouting` 字段，不维护能力矩阵，也不拦截包括 ultra 在内的目录选择。目录只用于选项展示；生图以实时请求结果为准。POST 返回 202 后，轮询的任务结果可能返回 failed：
 
 ```json
 {
-  "imageRouting": {
-    "version": 1,
-    "source": "codex-task-router",
-    "backend": "direct",
-    "updatedAt": "2026-10-09T03:25:00Z",
-    "defaultReasoning": "medium",
-    "models": [{
-      "id": "MODEL_ID",
-      "choices": [
-        {
-          "reasoning": "LEVEL",
-          "status": "ready",
-          "effectiveModel": "TARGET_MODEL_ID",
-          "effectiveReasoning": "LEVEL",
-          "fallback": true
-        },
-        {"reasoning": null, "status": "unsupported", "errorCode": "USAGE_ERROR"}
-      ]
-    }]
+  "status": "failed",
+  "result": {
+    "status": "failed",
+    "error": {
+      "code": "DIRECT_UNSUPPORTED_REASONING",
+      "message": "Upstream does not support the requested reasoning effort",
+      "retryable": false
+    }
   }
 }
 ```
 
-- `reasoning=null` 单独表示请求省略 reasoning，即服务默认，不能拿模型默认替代。
-- `ready` 表示服务预检通过并选定主模型，不保证上游生图一定成功。
-- `unsupported` 表示解析阶段拒绝组合，不发送上游请求；`unknown` 表示元数据计算失败，不能推断有效目标。
-- 切换选择即展示目标主模型和等级；回退需要确认后才提交，确认期间目标或选择变化会要求重新确认。
-- 服务仍是最终校验者。目录来自本机/降级缓存或路由超过 5 分钟时明确标注缓存；缓存的不支持组合要求先刷新。
-- 旧服务缺少字段、未来 schema 版本、手动 ID 没有匹配项或格式异常时退化为“未知”，不凭模型名猜测。
-- 服务拓展没有改动实际回退规则。参考实现补丁见 [codex-task-image-routing.patch](codex-task-image-routing.patch)；适用于原始 codex-task 0.2.17 源码。
+`DIRECT_UNSUPPORTED_MODEL`、`DIRECT_UNSUPPORTED_REASONING`、`DIRECT_UNSUPPORTED_IMAGE_MODEL`、`DIRECT_UNSUPPORTED_IMAGE_COMBINATION` 表示明确的模型/等级/绘图工具拒绝。其它参数拒绝、鉴权、限流、网络及服务错误分别解释，不误判为组合不支持。
+
+App 用经过校验的错误码构造中文提示与任务自己保存的选择，不展示或持久化上游原始错误正文、details 或凭证。失败记录只属于该任务，不禁止未来提交；不会自动降级、重试创建任务或变更已保存的模型/等级。提供“调整组合再试”回到编辑页，由用户明确提交。
+
+服务保留可选 imageModel 绘图工具参数；App 当前省略它，由上游选择，实际版本未知。
 
 ## 全屏图片与本机参考图
 

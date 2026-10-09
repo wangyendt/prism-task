@@ -26,7 +26,7 @@ Prism Task 是 [CodexTask](https://github.com/wangyendt/codex-task) 的独立手
 ## 功能
 
 - **生文**：`POST /v1/text`，可附带参考图片。
-- **生图路由提示**：读取服务返回的 `imageRouting`，切换模型/等级立即显示预期主模型；回退时提交前确认，不支持的组合提示调整。旧服务没有此字段时显示未知，不猜测回退规则。
+- **生图组合透传**：选择哪个主模型和思考等级就提交哪个，包括 `ultra`；不读取路由能力矩阵、不拦截组合、不确认回退、不自动换模型。上游明确拒绝时展示组合错误，限流、鉴权、网络及其它参数问题独立说明。
 - **全屏图库**：参考图、识图输入和生成结果点击全屏；双指缩放、单指拖动、双击放大/复位、放大后单击复位、左右切图、旋转预览、保存与分享原文件。
 - **生图**：`POST /v1/image`，支持参考图片、尺寸和质量选择；下载、保存与分享图片。
 - **识图**：上传原始图片并调用 `/v1/text`，不把图片输入能力误当作生图能力。
@@ -39,7 +39,7 @@ Prism Task 是 [CodexTask](https://github.com/wangyendt/codex-task) 的独立手
 - **安全凭证**：Android Keystore AES-GCM 加密保存 Token，不嵌入源码或 APK；禁用备份、明文 HTTP、鉴权重定向及跨源产物下载。
 - **界面预览**：无 Token 也可查看明确标注的演示目录；预览模式不创建任务，不伪装推理成功。
 
-> 当前只使用 **Direct** 后端。`defaultReasoning` 是模型声明值，不是服务默认配置；选择“服务默认”会省略 `reasoning`。生图选择的是调用工具的**主模型**，不是底层绘图模型版本；托管工具没有披露具体版本。主模型可能被服务回退，应以结果的 `effectiveModel` 为准，包括被标记为 Responses Lite 的 Luna。目录不是所有模型的推理实测证明。
+> 当前只使用 **Direct** 后端。`defaultReasoning` 是模型声明值，不是服务默认配置；选择“服务默认”会省略 `reasoning`。生图选择的是调用工具的**主模型**，不是底层绘图模型版本；具体绘图版本未知。服务保留选择并交由上游判断，目录不是所有组合的生图实测证明。失败不会建立禁用名单，下次仍可提交原组合。
 
 ## 开始使用
 
@@ -103,7 +103,7 @@ app/src/main/java/com/wayne/prismtask/
   Vault.java          Android Keystore Token 加密存储
   PrismApp.java       目录缓存、状态、图片导入、任务轮询、本机记录
   MainActivity.java   原生创作 / 任务 / 连接 / 结果 UI
-  ImageRouting.java   可选服务路由元数据、组合匹配与缓存时效
+  TaskFailure.java    根据稳定错误码展示组合拒绝与其它故障，避免泄露原始错误
   PhotoViewer.java    全屏图库、手势、保存与分享
   ImageTransform.java 可单测缩放/拖动/复位几何
   ImageDecoder.java   有界预览解码及 EXIF 方向校正
@@ -111,7 +111,7 @@ app/src/main/java/com/wayne/prismtask/
 app/src/test/         协议及假传输测试，不访问真实服务或产生推理费用
 ```
 
-- [0.2.0 更新说明](docs/CHANGELOG.md)
+- [更新说明](docs/CHANGELOG.md)
 - [协议与安全边界](docs/API.md)
 - [设计说明](docs/DESIGN.md)
 - [验证记录](docs/VALIDATION.md)

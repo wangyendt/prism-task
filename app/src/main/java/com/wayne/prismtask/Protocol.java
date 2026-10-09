@@ -107,6 +107,11 @@ public final class Protocol {
     return candidate;
   }
 
+  /** Image capability is decided by the live upstream, not a cached routing allowlist. */
+  public static String imageSelectionError(String model) {
+    return model == null || model.isBlank() ? "请选择模型或输入模型 ID" : null;
+  }
+
   public static String selectionError(
       Catalog catalog, String model, String effort, boolean manual) {
     if (model == null || model.isBlank()) return "请选择模型或输入模型 ID";
