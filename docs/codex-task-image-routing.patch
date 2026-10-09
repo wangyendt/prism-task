@@ -1,0 +1,82 @@
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -5,6 +5,7 @@
+ import { basename, join } from "node:path";
+ import { createModelCatalogReader, type ModelCatalog } from "./model-catalog.js";
+ import { dispatch } from "./api.js";
++import { imageRoutingForCatalog } from "./image-routing.js";
+ import { asCodexTaskError } from "./errors.js";
+ import { ensureDir } from "./fs-utils.js";
+ import { appPaths } from "./paths.js";
+@@ -364,7 +365,7 @@
+     }
+     if (request.method === "GET" && url.pathname === "/v1/models") {
+       const catalog = await readModels(url.searchParams.get("refresh") === "true");
+-      writeJson(response, catalog.models.length ? 200 : 503, catalog);
++      writeJson(response, catalog.models.length ? 200 : 503, { ...catalog, imageRouting: imageRoutingForCatalog(catalog) });
+       return;
+     }
+     const requestedKind = requestedTaskKind(request.method, url.pathname);
+--- /dev/null
++++ b/src/image-routing.ts
+@@ -0,0 +1,60 @@
++import { resolveDirectImageModel } from "./backends/direct/models.js";
++import { loadConfig } from "./config.js";
++import { asCodexTaskError } from "./errors.js";
++import type { ModelCatalog } from "./model-catalog.js";
++import type { ReasoningEffort } from "./types.js";
++
++export interface ImageRouteChoice {
++  reasoning: string | null;
++  status: "ready" | "unsupported" | "unknown";
++  effectiveModel?: string;
++  effectiveReasoning?: string;
++  fallback?: boolean;
++  errorCode?: string;
++}
++
++export interface ImageRouting {
++  version: 1;
++  source: "codex-task-router";
++  backend: "direct";
++  updatedAt: string;
++  defaultReasoning: string;
++  models: { id: string; choices: ImageRouteChoice[] }[];
++}
++
++/** The same resolver as executeDirectImage, without authentication, inference or writes. */
++export function imageRoutingForCatalog(
++  catalog: ModelCatalog,
++  config = loadConfig(),
++  resolve = resolveDirectImageModel,
++): ImageRouting {
++  return {
++    version: 1,
++    source: "codex-task-router",
++    backend: "direct",
++    updatedAt: new Date().toISOString(),
++    defaultReasoning: config.directReasoning,
++    models: catalog.models.map((model) => ({
++      id: model.id,
++      choices: [...new Set(model.reasoningLevels), null].map((reasoning): ImageRouteChoice => {
++        try {
++          const result = resolve(config.codexHome, model.id, (reasoning ?? config.directReasoning) as ReasoningEffort);
++          return {
++            reasoning,
++            status: "ready",
++            effectiveModel: result.model.model,
++            effectiveReasoning: result.model.reasoning,
++            fallback: result.model.model !== model.id,
++          };
++        } catch (error) {
++          const normalized = asCodexTaskError(error);
++          return {
++            reasoning,
++            status: normalized.code === "USAGE_ERROR" ? "unsupported" : "unknown",
++            errorCode: normalized.code,
++          };
++        }
++      }),
++    })),
++  };
++}

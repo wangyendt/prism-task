@@ -54,4 +54,49 @@ Token 使用非导出 Android Keystore AES 密钥及随机 IV，通过 AES/GCM �
 
 ## 生图模型的两层含义
 
-App 设置选择的是处理提示词并调用 image_generation 工具的主模型。结果展示服务实际返回的 effectiveModel；它不是底层绘图模型版本。托管绘图工具没有披露具体版本。当前服务对被标记为 Responses Lite 的部分模型（包括 Luna）使用兼容主模型 gpt-5.5；gpt-6-astra 路由有特别处理。客户端不硬编码这套回退规则，也不把“6 系列”视为统一的生图能力保证。
+App 设置选择的是处理提示词并调用 image_generation 工具的主模型。结果展示服务实际返回的 effectiveModel；它不是底层绘图模型版本。托管绘图工具没有披露具体版本。服务对被标记为 Responses Lite 的模型使用兼容主模型 gpt-5.5；gpt-6-astra 路由有特别处理。缓存条目可能随目录刷新变化，同一模型今天是否回退不能仅凭型号推断。客户端不硬编码这套回退规则，也不把“6 系列”视为统一的生图能力保证。
+
+## 可选动态生图路由（0.2.0）
+
+hx470 服务已在 `GET /v1/models` 响应中增补 `imageRouting`。字段来源是 codex-task 当前实际使用的 Direct 生图解析函数，而非 App 静态模型表。目录只查询元数据，不创建推理任务。
+
+```json
+{
+  "imageRouting": {
+    "version": 1,
+    "source": "codex-task-router",
+    "backend": "direct",
+    "updatedAt": "2026-10-09T03:25:00Z",
+    "defaultReasoning": "medium",
+    "models": [{
+      "id": "MODEL_ID",
+      "choices": [
+        {
+          "reasoning": "LEVEL",
+          "status": "ready",
+          "effectiveModel": "TARGET_MODEL_ID",
+          "effectiveReasoning": "LEVEL",
+          "fallback": true
+        },
+        {"reasoning": null, "status": "unsupported", "errorCode": "USAGE_ERROR"}
+      ]
+    }]
+  }
+}
+```
+
+- `reasoning=null` 单独表示请求省略 reasoning，即服务默认，不能拿模型默认替代。
+- `ready` 表示服务预检通过并选定主模型，不保证上游生图一定成功。
+- `unsupported` 表示解析阶段拒绝组合，不发送上游请求；`unknown` 表示元数据计算失败，不能推断有效目标。
+- 切换选择即展示目标主模型和等级；回退需要确认后才提交，确认期间目标或选择变化会要求重新确认。
+- 服务仍是最终校验者。目录来自本机/降级缓存或路由超过 5 分钟时明确标注缓存；缓存的不支持组合要求先刷新。
+- 旧服务缺少字段、未来 schema 版本、手动 ID 没有匹配项或格式异常时退化为“未知”，不凭模型名猜测。
+- 服务拓展没有改动实际回退规则。参考实现补丁见 [codex-task-image-routing.patch](codex-task-image-routing.patch)；适用于原始 codex-task 0.2.17 源码。
+
+## 全屏图片与本机参考图
+
+每张参考图、历史记录中的参考图以及生成产物均可进入同一全屏图库。支持双指缩放（适配尺寸到 8 倍）、单指拖动、双击放大/复位、放大后单击复位、适配时左右滑动切图、90° 预览旋转、显式复位、保存及分享。适配状态单击隐藏/显示工具栏，关闭按钮或系统返回退出。
+
+大图预览经过采样且至多解码 800 万像素，尊重 EXIF 方向；预览旋转和缩放不修改原文件。GIF 显示静态首帧。保存、分享输出原始文件。
+
+新任务提交时把参考图复制到私有 artifacts 目录，纳入最近 30 条记录，淘汰或清除任务时同步删除。参考图片属于未额外加密的本机数据；Android 备份仍禁用。历史 0.1.0 记录没有持久化参考图，升级不会伪造或补回这些图片。草稿分享仅通过已有 cache/shared FileProvider 路径复制指定文件，不开放整个输入目录。

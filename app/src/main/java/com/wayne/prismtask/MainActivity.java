@@ -37,6 +37,7 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
   String renderedActiveId = "";
   TextView catalogStatus;
   File exportFile;
+  PhotoViewer viewer;
   final android.util.LruCache<String, Bitmap> bitmaps =
       new android.util.LruCache<>(24 * 1024 * 1024) {
         @Override
@@ -81,6 +82,7 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
       app.prompt = saved.getString("prompt", app.prompt);
       app.mode = saved.getString("mode", app.mode);
       restoredJobId = saved.getString("jobId", "");
+      exportFile = privateImage(saved.getString("exportPath", ""));
     }
     getOnBackPressedDispatcher()
         .addCallback(
@@ -94,6 +96,17 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
             });
     // Preview is an explicit UI option and never fabricates a successful model request.
     render();
+    if (saved != null) {
+      ArrayList<String> paths = saved.getStringArrayList("viewerFiles");
+      if (paths != null) {
+        List<File> images = new ArrayList<>();
+        for (String path : paths) {
+          File file = privateImage(path);
+          if (file != null) images.add(file);
+        }
+        if (!images.isEmpty()) showImages(images, saved.getInt("viewerIndex", 0));
+      }
+    }
   }
 
   @Override
@@ -111,6 +124,7 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
 
   @Override
   protected void onDestroy() {
+    if (viewer != null) viewer.dismiss();
     bitmaps.evictAll();
     super.onDestroy();
   }
@@ -121,6 +135,13 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
     out.putString("prompt", app.prompt);
     out.putString("mode", app.mode);
     out.putString("jobId", selectedJob == null ? restoredJobId : selectedJob.id);
+    if (exportFile != null) out.putString("exportPath", exportFile.getAbsolutePath());
+    if (viewer != null && viewer.isShowing()) {
+      ArrayList<String> paths = new ArrayList<>();
+      for (File file : viewer.files) paths.add(file.getAbsolutePath());
+      out.putStringArrayList("viewerFiles", paths);
+      out.putInt("viewerIndex", viewer.index);
+    }
     super.onSaveInstanceState(out);
   }
 
@@ -492,9 +513,7 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
                 render();
                 return;
               }
-              launching = true;
-              app.submit();
-              if (!app.submitting) launching = false;
+              submitWithRoutingConfirmation();
             });
     if (app.submitting || app.importing) {
       submit.setAlpha(.55f);
@@ -585,6 +604,102 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
             app.catalog != null && (app.localCatalog || app.catalog.stale()) ? CORAL : MUTED,
             false);
     box.addView(catalogStatus);
+    if (app.mode.equals("image") && !app.preview) {
+      gap(box, 16);
+      imageRoutePanel(box);
+    }
+  }
+
+  void imageRoutePanel(LinearLayout box) {
+    eyebrow(box, "ROUTING / 生图主模型");
+    ImageRouting.Choice route = app.imageRoute();
+    if (route == null || route.status().equals("unknown")) {
+      hint(box, "服务尚未提供此组合的生图路由。请刷新目录；实际执行主模型以任务结果为准。", MUTED);
+      return;
+    }
+    boolean fresh = app.freshRoute(route);
+    if (route.unsupported()) {
+      hint(box, "此模型 + 等级当前不被生图路由接受", CORAL);
+      gap(box, 7);
+      hint(box, "codex-task 会在上游请求前拒绝此组合，请调整模型或思考等级。", MUTED);
+    } else {
+      TextView target =
+          mono(route.model() + " / " + route.effort(), 13, route.fallback() ? CORAL : MINT);
+      box.addView(target);
+      gap(box, 7);
+      hint(
+          box,
+          route.fallback()
+              ? "预计从 " + app.model + " 回退到以上主模型；由 codex-task 在提交上游前处理，不是 OpenAI 服务端换模型。"
+              : "预计保留所选主模型，无 codex-task 回退。",
+          MUTED);
+    }
+    gap(box, 8);
+    hint(
+        box,
+        (fresh ? "服务路由 · " : "缓存路由，提交前请刷新 · ")
+            + formatIso(route.updatedAt())
+            + "。这是主模型，不是底层绘图模型版本。",
+        fresh ? MUTED : CORAL);
+  }
+
+  void submitWithRoutingConfirmation() {
+    if (!app.mode.equals("image")
+        || app.preview
+        || app.selectionError() != null
+        || app.prompt.isBlank()
+        || !app.hasToken()) {
+      launchSubmit();
+      return;
+    }
+    ImageRouting.Choice route = app.imageRoute();
+    if (route != null && route.unsupported()) {
+      new AlertDialog.Builder(this)
+          .setTitle(app.freshRoute(route) ? "此生图组合会被拒绝" : "请刷新生图路由")
+          .setMessage("服务返回的路由不接受这个模型与思考等级组合。调整选择或刷新目录后再提交，不会自动降低思考等级。")
+          .setNegativeButton("返回调整", null)
+          .setNeutralButton("选择模型", (d, w) -> modelDialog())
+          .setPositiveButton("刷新目录", (d, w) -> app.refresh(true))
+          .show();
+      return;
+    }
+    if (route != null && route.ready() && route.fallback()) {
+      String selectedModel = app.model, selectedEffort = app.selectedEffort(), endpoint = app.base;
+      new AlertDialog.Builder(this)
+          .setTitle("确认主模型回退")
+          .setMessage(
+              app.model
+                  + " / "
+                  + (selectedEffort == null ? "服务默认" : selectedEffort)
+                  + "\n→ "
+                  + route.model()
+                  + " / "
+                  + route.effort()
+                  + "\n\ncodex-task 会在发送给 OpenAI 前替换主模型。托管绘图模型版本未披露。"
+                  + (app.freshRoute(route) ? "" : "\n\n当前为缓存路由，建议先刷新；实际执行模型以任务结果为准。"))
+          .setNegativeButton("返回调整", null)
+          .setNeutralButton("刷新目录", (d, w) -> app.refresh(true))
+          .setPositiveButton(
+              "按回退模型提交",
+              (d, w) -> {
+                if (!app.mode.equals("image")
+                    || !endpoint.equals(app.base)
+                    || !selectedModel.equals(app.model)
+                    || !Objects.equals(selectedEffort, app.selectedEffort())
+                    || !route.sameTarget(app.imageRoute())) {
+                  toast("选择或路由已更新，请重新确认");
+                  return;
+                }
+                launchSubmit();
+              })
+          .show();
+    } else launchSubmit();
+  }
+
+  void launchSubmit() {
+    launching = true;
+    app.submit();
+    if (!app.submitting) launching = false;
   }
 
   void addLevel(LinearLayout row, String label, String value) {
@@ -739,9 +854,12 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
       HorizontalScrollView hs = new HorizontalScrollView(this);
       hs.setHorizontalScrollBarEnabled(false);
       LinearLayout images = horizontal();
+      List<File> referenceFiles = app.inputs.stream().map(PrismApp.InputImage::file).toList();
       for (PrismApp.InputImage ref : app.inputs) {
         LinearLayout tile = vertical();
         ImageView image = imageView(ref.file(), 100);
+        image.setOnClickListener(
+            v -> showImages(referenceFiles, referenceFiles.indexOf(ref.file())));
         tile.addView(image, new LinearLayout.LayoutParams(dp(100), dp(80)));
         TextView remove = text("移除 ×", 11, CORAL, false);
         remove.setGravity(Gravity.CENTER);
@@ -916,7 +1034,7 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
             }),
         new LinearLayout.LayoutParams(-1, dp(48)));
     gap(content, 22);
-    TextView footer = mono("PRISM TASK  0.1.0  /  DIRECT ONLY", 10, MUTED);
+    TextView footer = mono("PRISM TASK  0.2.0  /  DIRECT ONLY", 10, MUTED);
     footer.setGravity(Gravity.CENTER);
     content.addView(footer);
   }
@@ -1012,13 +1130,43 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
     info(meta, job.mode.equals("image") ? "选择的主模型" : "选择模型", job.model);
     info(meta, "思考等级", job.effort == null ? "服务默认（未传入）" : job.effort);
     info(meta, "任务 ID", job.id);
+    if (job.mode.equals("image") && !job.routeModel.isBlank()) {
+      info(meta, "提交前路由预期", job.routeModel + " / " + job.routeEffort);
+    }
+    if (!job.references.isEmpty()) {
+      gap(meta, 8);
+      eyebrow(meta, "INPUT / 参考图片");
+      HorizontalScrollView references = new HorizontalScrollView(this);
+      references.setHorizontalScrollBarEnabled(false);
+      LinearLayout strip = horizontal();
+      List<File> referenceFiles = List.copyOf(job.references);
+      for (File file : referenceFiles) {
+        ImageView thumbnail = imageView(file, 140);
+        thumbnail.setOnClickListener(v -> showImages(referenceFiles, referenceFiles.indexOf(file)));
+        LinearLayout.LayoutParams tile = new LinearLayout.LayoutParams(dp(104), dp(88));
+        tile.rightMargin = dp(8);
+        strip.addView(thumbnail, tile);
+      }
+      references.addView(strip);
+      meta.addView(references);
+      gap(meta, 14);
+      hint(meta, "点击全屏查看 · 支持缩放、保存和分享", MUTED);
+      gap(meta, 14);
+    }
     String effective = job.result.optString("effectiveModel", "");
-    if (!effective.isBlank()) info(meta, job.mode.equals("image") ? "实际执行主模型" : "实际使用模型", effective);
+    if (!effective.isBlank())
+      info(meta, job.mode.equals("image") ? "实际执行主模型" : "实际使用模型", effective);
     String reasoning = job.result.optString("reasoningEffort", "");
     if (!reasoning.isBlank()) info(meta, "实际思考等级", reasoning);
     if (!effective.isBlank() && !effective.equals(job.model))
-      hint(meta, "服务回退到兼容主模型；这不是底层绘图模型的版本。", CORAL);
-    if (job.mode.equals("image")) { gap(meta, 10); info(meta, "绘图模型版本", "托管工具未披露"); }
+      hint(
+          meta,
+          job.mode.equals("image") ? "codex-task 在上游请求前回退到兼容主模型；这不是底层绘图模型的版本。" : "实际执行模型与提交选择不同。",
+          CORAL);
+    if (job.mode.equals("image")) {
+      gap(meta, 10);
+      info(meta, "绘图模型版本", "托管工具未披露");
+    }
     gap(content, 16);
     if (!Protocol.terminal(job.status)) {
       LinearLayout progress = card(content);
@@ -1137,6 +1285,8 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
         LinearLayout imageCard = card(content);
         eyebrow(imageCard, "OUTPUT / 图片产物");
         ImageView image = imageView(file, 900);
+        List<File> gallery = List.copyOf(job.files);
+        image.setOnClickListener(v -> showImages(gallery, gallery.indexOf(file)));
         image.setAdjustViewBounds(true);
         image.setScaleType(ImageView.ScaleType.FIT_CENTER);
         imageCard.addView(image, new LinearLayout.LayoutParams(-1, dp(280)));
@@ -1198,22 +1348,17 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
     view.setBackground(shape(BG, 14, false));
     view.setClipToOutline(true);
     view.setScaleType(ImageView.ScaleType.CENTER_CROP);
-    view.setContentDescription("图片预览");
+    view.setContentDescription("图片预览，点击全屏查看");
+    view.setFocusable(true);
+    view.setOnClickListener(v -> showImages(List.of(file), 0));
     String key = file.getAbsolutePath() + "#" + target;
     Bitmap bitmap = bitmaps.get(key);
     if (bitmap != null) view.setImageBitmap(bitmap);
     else
       app.io.execute(
           () -> {
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(file.getAbsolutePath(), options);
-            int sample = 1;
-            while (Math.max(options.outWidth, options.outHeight) / sample > target * 2) sample *= 2;
-            options.inJustDecodeBounds = false;
-            options.inSampleSize = sample;
             try {
-              Bitmap decoded = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+              Bitmap decoded = ImageDecoder.decode(file, target);
               if (decoded != null)
                 runOnUiThread(
                     () -> {
@@ -1222,7 +1367,7 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
                         view.setImageBitmap(decoded);
                       }
                     });
-            } catch (OutOfMemoryError ignored) {
+            } catch (Exception | OutOfMemoryError ignored) {
               runOnUiThread(() -> toast("图片较大，请保存后查看原图"));
             }
           });
@@ -1230,6 +1375,29 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
   }
 
   void shareFile(File file) {
+    if (!file.isFile()) {
+      toast("图片文件已移除");
+      return;
+    }
+    if (file.getParentFile().equals(new File(getCacheDir(), "inputs"))) {
+      app.io.execute(
+          () -> {
+            try {
+              File directory = new File(getCacheDir(), "shared");
+              if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException();
+              File copy = new File(directory, file.getName());
+              java.nio.file.Files.copy(
+                  file.toPath(), copy.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+              runOnUiThread(
+                  () -> {
+                    if (!isDestroyed()) shareFile(copy);
+                  });
+            } catch (Exception ignored) {
+              runOnUiThread(() -> toast("图片分享准备失败"));
+            }
+          });
+      return;
+    }
     Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".files", file);
     String mime = getContentResolver().getType(uri);
     Intent intent =
@@ -1239,6 +1407,44 @@ public final class MainActivity extends ComponentActivity implements PrismApp.Li
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
     intent.setClipData(ClipData.newUri(getContentResolver(), "Prism image", uri));
     startActivity(Intent.createChooser(intent, "分享图片"));
+  }
+
+  File privateImage(String path) {
+    if (path == null || path.isBlank()) return null;
+    try {
+      File file = new File(path).getCanonicalFile();
+      File parent = file.getParentFile();
+      if (file.isFile()
+          && (parent.equals(app.artifactDir().getCanonicalFile())
+              || parent.equals(new File(getCacheDir(), "inputs").getCanonicalFile())
+              || parent.equals(new File(getCacheDir(), "shared").getCanonicalFile()))) return file;
+    } catch (IOException ignored) {
+    }
+    return null;
+  }
+
+  void showImages(List<File> files, int index) {
+    List<File> valid = new ArrayList<>();
+    for (File file : files) if (privateImage(file.getAbsolutePath()) != null) valid.add(file);
+    if (valid.isEmpty()) {
+      toast("图片文件已移除");
+      return;
+    }
+    File selected = files.get(Math.max(0, Math.min(index, files.size() - 1)));
+    int position = Math.max(0, valid.indexOf(selected));
+    if (viewer != null) viewer.dismiss();
+    hideKeyboard();
+    viewer =
+        new PhotoViewer(
+            this,
+            valid,
+            position,
+            file -> {
+              exportFile = file;
+              exportImage.launch(file.getName());
+            },
+            this::shareFile);
+    viewer.show();
   }
 
   static String modeLabel(String mode) {

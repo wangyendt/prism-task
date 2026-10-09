@@ -49,6 +49,8 @@ public final class PrismApp extends Application {
     public boolean tracking = true;
     public JSONObject result = new JSONObject();
     public List<File> files = new ArrayList<>();
+    public List<File> references = new ArrayList<>();
+    public String routeModel = "", routeEffort = "";
 
     public String title() {
       return prompt.length() > 70 ? prompt.substring(0, 70) + "…" : prompt;
@@ -57,6 +59,8 @@ public final class PrismApp extends Application {
     JSONObject json() throws JSONException {
       JSONArray paths = new JSONArray();
       for (File f : files) paths.put(f.getName());
+      JSONArray refs = new JSONArray();
+      for (File f : references) refs.put(f.getName());
       return new JSONObject()
           .put("id", id)
           .put("base", base)
@@ -70,6 +74,9 @@ public final class PrismApp extends Application {
           .put("created", created)
           .put("result", result)
           .put("files", paths)
+          .put("references", refs)
+          .put("routeModel", routeModel)
+          .put("routeEffort", routeEffort)
           .put("message", message);
     }
 
@@ -96,6 +103,16 @@ public final class PrismApp extends Application {
           if (!name.matches("[A-Za-z0-9_.-]+")) continue;
           File f = new File(dir, name);
           if (f.isFile()) x.files.add(f);
+        }
+      x.routeModel = j.optString("routeModel", "");
+      x.routeEffort = j.optString("routeEffort", "");
+      JSONArray refs = j.optJSONArray("references");
+      if (refs != null)
+        for (int i = 0; i < refs.length(); i++) {
+          String name = refs.getString(i);
+          if (!name.matches("[A-Za-z0-9_.-]+")) continue;
+          File f = new File(dir, name);
+          if (f.isFile()) x.references.add(f);
         }
       return x;
     }
@@ -214,6 +231,20 @@ public final class PrismApp extends Application {
 
   public String selectedEffort() {
     return effort == null || effort.isEmpty() ? null : effort;
+  }
+
+  public ImageRouting.Choice imageRoute() {
+    return preview || catalog == null
+        ? null
+        : ImageRouting.find(catalog.raw(), model, selectedEffort());
+  }
+
+  public boolean freshRoute(ImageRouting.Choice route) {
+    return route != null
+        && catalog != null
+        && !localCatalog
+        && !catalog.stale()
+        && route.fresh(System.currentTimeMillis());
   }
 
   public String selectionError() {
@@ -365,7 +396,16 @@ public final class PrismApp extends Application {
       error("请在连接设置中填写设备 Token");
       return;
     }
+    ImageRouting.Choice route = mode.equals("image") ? imageRoute() : null;
+    if (route != null && route.unsupported() && freshRoute(route)) {
+      error("当前服务生图路由不接受此组合，请调整模型或思考等级");
+      return;
+    }
     Job job = new Job();
+    if (route != null && route.ready()) {
+      job.routeModel = route.model();
+      job.routeEffort = route.effort();
+    }
     job.base = base;
     job.mode = mode;
     job.prompt = prompt.trim();
@@ -396,6 +436,12 @@ public final class PrismApp extends Application {
             List<Payload.Image> uploads = new ArrayList<>();
             for (InputImage image : images)
               uploads.add(new Payload.Image(image.file, image.name, image.mime));
+            for (InputImage image : images) {
+              String extension = image.file().getName().replaceFirst(".*(?=\\.[^.]+$)", "");
+              File copy = new File(artifactDir(), "reference-" + UUID.randomUUID() + extension);
+              job.references.add(copy);
+              Files.copy(image.file().toPath(), copy.toPath());
+            }
             Payload.write(payload, body, uploads);
             sent = true;
             JSONObject response = client.submit(payload, job.mode.equals("image"));
@@ -414,6 +460,7 @@ public final class PrismApp extends Application {
                   schedule(job, 1);
                 });
           } catch (Exception e) {
+            for (File reference : job.references) reference.delete();
             boolean uncertain = sent && !(e instanceof Api.Failure);
             String message =
                 uncertain
@@ -437,6 +484,7 @@ public final class PrismApp extends Application {
     while (jobs.size() > 30) {
       Job old = jobs.remove(jobs.size() - 1);
       for (File f : old.files) f.delete();
+      for (File f : old.references) f.delete();
     }
   }
 
@@ -700,7 +748,10 @@ public final class PrismApp extends Application {
     emit("job");
     io.execute(
         () -> {
-          for (Job job : removed) for (File f : job.files) f.delete();
+          for (Job job : removed) {
+            for (File f : job.files) f.delete();
+            for (File f : job.references) f.delete();
+          }
         });
   }
 
